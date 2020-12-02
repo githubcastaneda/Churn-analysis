@@ -1,0 +1,660 @@
+---
+title: "Customer Churn Factors in the Telecom Industry"
+date: "`r Sys.Date()`"
+output:
+  pdf_document:
+    fig_width: 7
+    fig_height: 5
+---
+
+```{r, include = FALSE}
+# SET ENVIRONMENT - load plyr before dplyr
+pacman::p_load(ggplot2, reshape2, plyr, dplyr, mice, caret, mltools, ROCR, xgboost, tensorflow,
+               keras, data.table, leaps, DescTools, dataPreparation, mice, rpart, rpart.plot,
+               e1071, randomForest, adabag, DMwR, MLmetrics, kableExtra)
+set.seed(42)
+options(scipen = 999)
+Telco <- read.csv("Telco.csv", row.names = 1)
+options(warn=1)
+# PARTITION
+index <- createDataPartition(Telco$Churn, p=0.8, list = FALSE)
+telco <- Telco[index,]
+telco$SeniorCitizen <- mapvalues(telco$SeniorCitizen, c(0, 1), c("No", "Yes"))
+telco$PaymentMethod <- mapvalues(telco$PaymentMethod,
+                                          c("Electronic check", "Mailed check",
+                                            "Bank transfer (automatic)",
+                                            "Credit card (automatic)"),
+                                          c("eCheck", "Mailed", "Transfer", "Credit"))
+
+```
+
+# Executive Summary
+
+### Telecommunication companies spend substantial portions of their revenue in customer acquisition and retention. In this paper, we analyze the features of telecom
+customers in order to identify characteristics that will reduce the likelihood of churn.  In the following analysis, we utilize the Telco dataset, extracted from a single
+company and distributed by IBM. This dataset contains important account and demographic features of customers and the length of their tenure with the company.  This
+analysis utilizes binary classification models, ensembles, and a neural network to accurately predict separation and determine the importance of features for customers that
+churn. We conclude that establishing convenient payment methods and manageable contractual prices leads to longer customer retention.
+
+\newpage
+
+# 1.  Introduction
+
+### IBM aggregates key features about customers that remain or churn with a telecommunications company. Customer churn represents a costly proportion of lost revenues.
+The European Business Review claims that at a churn rate of under 2 percent, this can amount to $65 million per month. About 15-20 percent of total telecommunications revenue
+is dedicated towards improving methods that reduce customer churn.
+
+### This analysis can minimize the impact of separation from the company by identifying key customer characteristics.  These findings can be used to develop marketing
+strategies that focus on building customer habits that are likely to increase retention, and establishing promotions to transition customer behavior if they exhibit features
+associated with separation.
+
+# 2.  Data Description
+
+### The Telco dataset contains 7043 records and 20 variables associated with customer account and demographic information, and lists the services the customer has subscribed
+to. The target binary variable answers the question of customer churn. The label is also unbalanced, with the churn class appearing in approximately 26.5 percent of cases.
+The data set contains no date related variables.  However, this rate is consistent with a telecommunications annual churn rate, which ranges between 10 and 67 percent for the
+industry. Therefore, we assume that the set is comprised of annual data and that the monthly churn rate for the company is 2.2 percent.
+
+```{r, echo = FALSE}
+ggplot(data = telco, aes(x = Churn, fill = Churn)) + geom_bar() +
+  ggtitle("Frequency of Churn") + scale_fill_brewer(palette = "Dark2") +
+  ylab("Count") + xlab("Churn")
+```
+
+# 3.  Exploratory Data Analysis
+
+### The histograms reveal that there are no outliers present that would result from improper data capture or imputation. As expected, total charges is skewed right.  The
+two distributions seen in the monthly charges histogram is more informative.  The different peaks may be descriptive of two types of customers, one that subscribes to the
+basic package, and another that selectively subscribes to various services. A heatmap matrix reveals a high level of collinearity between tenure and total charges. No other
+extreme correlations exist among the continuous predictors.
+
+```{r, echo = FALSE, warning = FALSE}
+n <- telco[c("tenure", "MonthlyCharges", "TotalCharges")]
+m <- na.omit(n)
+
+r <- round(cor(m), 2)
+rm <- melt(r)
+ggplot(rm, aes(x = Var1, y = Var2, fill = value)) +
+  geom_tile() + geom_text(aes(x = Var1, y = Var2, label = value)) + ggtitle("Correlation Matrix") +
+  theme(plot.title = element_text(hjust = 0.5)) + labs(x = "", y = "")
+```
+
+\newpage
+
+```{r, echo = FALSE, warning = FALSE}
+hist(Telco$MonthlyCharges, main = "Distribution of Monthly Charges", xlab = "Monthly Charges",
+     ylab = "Frequency")
+hist(Telco$TotalCharges, main = "Distribution of Total Charges", xlab = "Total Charges",
+     ylab = "Frequency")
+hist(Telco$tenure, main = "Distribution of Tenured Clients", xlab = "Tenure Duration",
+     ylab = "Frequency")
+```
+
+
+### The dataset contains a substantial number of factor variables.  Bar plots are used to reveal the frequency of different factors, as well as the percent of each factor
+that relates to customer churn. To reduce the length of the plot section, only those that offer the highest business value are presented.  The accompanying code can be run
+to generate them all. The gender and phone service subscription variables have nearly identical proportions of churn and retention in their respective classes. Seniors and
+customers with fiber optic internet are more likely to churn, and customers with dependents and DSL are less likely to churn. This may be contributed to lifestyle choices
+related to telecommunications and age, as well as the tendency that some services are less expensive than others.
+
+```{r, echo = FALSE}
+str(telco)
+
+ggplot(data = telco, aes(x = gender, fill = Churn)) + geom_bar() +
+  ggtitle("Churn by Gender") + scale_fill_brewer(palette = "Dark2") +
+  ylab("Count") + xlab("Gender")
+
+ggplot(data = telco, aes(x = SeniorCitizen, fill = Churn)) + geom_bar() +
+  ggtitle("Churn by Seniors") + scale_fill_brewer(palette = "Dark2") +
+  ylab("Count") + xlab("Is a Senior")
+
+ggplot(data = telco, aes(x = Dependents, fill = Churn)) + geom_bar() +
+  ggtitle("Churn and Dependents") + scale_fill_brewer(palette = "Dark2") +
+  ylab("Count") + xlab("Has Dependents")
+
+ggplot(data = telco, aes(x = InternetService, fill = Churn)) + geom_bar() +
+  ggtitle("Internet Service") + scale_fill_brewer(palette = "Dark2") +
+  ylab("Count") + xlab("Internet Service Type")
+
+ggplot(data = telco, aes(x = Contract, fill = Churn)) + geom_bar() +
+  ggtitle("Under Contract") + scale_fill_brewer(palette = "Dark2") +
+  ylab("Count") + xlab("Contract Type")
+
+ggplot(data = telco, aes(x = PaymentMethod, fill = Churn)) + geom_bar() +
+  ggtitle("Method of Payment") + scale_fill_brewer(palette = "Dark2") +
+  ylab("Count") + xlab("Payment Method")
+```
+
+### The cross-classification tables of combinations of services reveal that certain pairs are highly correlated, and if one service is subscribed to then so is another.
+These variables, such as online security and online backup services, as well as device protection and technical support services, are aggregated to reduce dimensionality and
+retain information. Other variables, such as having dependents and certain classes of the method of payment, have positive association with retention. This attribute of the
+dependents may be due to the fact that dependents utilize telecom services in the household as well, and it is costly to move an entire household from one service company to
+another. The advent of costly devices and the equipment installment plan also reduces the likelihood of churn. Customers now select devices based on long-term expected
+utilization given the costs associated with replacement, and payments are collected throughout the duration of the contract.
+
+### Online variables table
+```{r, echo = FALSE}
+table(telco$OnlineSecurity, telco$OnlineBackup)
+```
+
+### Streaming variables table
+```{r, echo = FALSE}
+table(telco$StreamingTV, telco$StreamingMovies)
+```
+
+### Protection and Support table
+```{r, echo = FALSE}
+table(telco$DeviceProtection, telco$TechSupport)
+```
+
+### Dependents and Churn table
+```{r, echo = FALSE}
+table(telco$Churn, telco$Dependents)
+```
+
+### Payment Methods and Churn table
+```{r, echo = FALSE}
+table(telco$PaymentMethod, telco$Churn)
+```
+
+### A side-by-side boxplot of contract type by tenure in months reveals that contract period is strongly associated with the length of customer retention. Also, most
+disassociated customers had high monthly payments prior to separation.  This can be seen by the side-by-side boxplot, and also from the scatterplot of total charges by tenure,
+where churn occurs mostly at high charges across all months, and occurs minimally at low charges. This may be useful in defining a marketing strategy that combines inexpensive
+and expensive services in packages, so customers are not overwhelmed with having unnecessary services and a high price bill.
+
+```{r, echo = FALSE, warning = FALSE}
+ggplot(data = telco, aes(x = Contract, y = tenure, fill = Contract)) + geom_boxplot() +
+  ggtitle("Contract Type and Loyalty") + scale_fill_brewer(palette = "Dark2") +
+  ylab("Tenure") + xlab("Contract Type")
+```
+
+\newpage
+
+```{r, echo = FALSE, warning = FALSE}
+ggplot(data = telco, aes(y = MonthlyCharges, x = Churn, fill = Churn)) + geom_boxplot() +
+  ggtitle("Monthly Charges") + scale_fill_brewer(palette = "Dark2") +
+  ylab("Monthly Charges") + xlab("Churn")
+
+ggplot(data = telco, aes(y = tenure, x = Churn, fill = Churn)) + geom_boxplot() +
+  ggtitle("Churn of Tenured Customers") + scale_fill_brewer(palette = "Dark2") +
+  ylab("Months with Company") + xlab("Churn")
+
+ggplot(data = telco, aes(y = TotalCharges, x = tenure, fill = Churn)) + geom_point(aes(color = Churn)) +
+  ggtitle("Total Charges and Tenure") + ylab("Total Charges") + xlab("Tenure")
+
+ggplot(data = telco, aes(y = MonthlyCharges, x = tenure, fill = Churn)) + geom_point(aes(color = Churn)) +
+  ggtitle("Monthly Charges and Tenure") + ylab("Monthly Charges") + xlab("Tenure")
+
+```
+
+```{r, eval = FALSE, include = FALSE}
+# EXPLORE TRAIN
+dim(telco)
+colnames(telco)
+str(telco)
+View(head(telco))
+summary(telco)
+mean(is.na(telco))
+stack(colMeans(is.na(telco)))
+
+# Unbalanced Data Set
+table(telco$Churn) / length(telco$Churn)
+# CROSS CLASSIFICATION TABLES - Categorical correl
+table(telco$PaperlessBilling, telco$PaymentMethod)
+table(telco$Churn, telco$PaperlessBilling)
+table(telco$Churn, telco$PaymentMethod)
+stream <- table(telco$StreamingMovies, telco$StreamingTV)
+sum(diag(stream)) / sum(stream)
+online <- table(Telco$OnlineBackup, Telco$OnlineSecurity)
+sum(diag(online)) / sum(online)
+table(telco$PhoneService, telco$InternetService)
+tech <- table(Telco$DeviceProtection, Telco$TechSupport)
+sum(diag(tech)) / sum(tech)
+table(telco$Churn, telco$SeniorCitizen)
+table(telco$Partner, telco$Dependents)
+
+# View Null rows
+View(Telco[which(is.na(Telco$TotalCharges)),])
+# ---------------------------------------------------------------
+
+# BARPLOTS - Categorical
+
+# Distribution of Churn
+ggplot(data = telco, aes(x = Churn, fill = Churn)) + geom_bar() +
+  ggtitle("Frequency of Churn") + scale_fill_brewer(palette = "Dark2") +
+  ylab("Count") + xlab("Churn")
+
+
+ggplot(data = telco, aes(x = Partner, fill = Churn)) + geom_bar() +
+  ggtitle("Partner") + scale_fill_brewer(palette = "Dark2") +
+  ylab("Count") + xlab("Has Partner")
+
+# Phone service is unnecessary
+ggplot(data = telco, aes(x = PhoneService, fill = Churn)) + geom_bar() +
+  ggtitle("Phone Service") + scale_fill_brewer(palette = "Dark2") +
+  ylab("Count") + xlab("Has Phone Service")
+table(telco$PhoneService == "Yes" & telco$Churn == "Yes") / sum(telco$PhoneService == "Yes")
+table(telco$PhoneService == "No" & telco$Churn == "Yes") / sum(telco$PhoneService == "No")
+
+# Slight negative effect
+ggplot(data = telco, aes(x = MultipleLines, fill = Churn)) + geom_bar() +
+  ggtitle("Multiple Lines") + scale_fill_brewer(palette = "Dark2") +
+  ylab("Count") + xlab("Has Multiple Lines")
+table(telco$MultipleLines == "Yes" & telco$Churn == "Yes") / sum(telco$MultipleLines == "Yes")
+table(telco$MultipleLines == "No" & telco$Churn == "Yes") / sum(telco$MultipleLines == "No")
+table(telco$MultipleLines == "No phone service" & telco$Churn == "Yes") / sum(telco$MultipleLines == "No phone service")
+
+# Negative effect - worse for Fiber Optic
+table(telco$InternetService == "DSL" & telco$Churn == "Yes") / sum(telco$InternetService == "DSL")
+table(telco$InternetService == "Fiber optic" & telco$Churn == "Yes") / sum(telco$InternetService == "Fiber optic")
+table(telco$InternetService == "No" & telco$Churn == "Yes") / sum(telco$InternetService == "No")
+
+# Positive effect
+ggplot(data = telco, aes(x = OnlineSecurity, fill = Churn)) + geom_bar() +
+  ggtitle("Online Security") + scale_fill_brewer(palette = "Dark2") +
+  ylab("Count") + xlab("Has Online Security")
+table(telco$OnlineSecurity == "Yes" & telco$Churn == "Yes") / sum(telco$OnlineSecurity == "Yes")
+table(telco$OnlineSecurity == "No" & telco$Churn == "Yes") / sum(telco$OnlineSecurity == "No")
+table(telco$OnlineSecurity == "No internet service" & telco$Churn == "Yes") / sum(telco$OnlineSecurity == "No internet service")
+
+# Has distinction
+ggplot(data = telco, aes(x = OnlineBackup, fill = Churn)) + geom_bar() +
+  ggtitle("Online Backup") + scale_fill_brewer(palette = "Dark2") +
+  ylab("Count") + xlab("Online Backup")
+
+# Positive effect
+ggplot(data = telco, aes(x = DeviceProtection, fill = Churn)) + geom_bar() +
+  ggtitle("Device Protection") + scale_fill_brewer(palette = "Dark2") +
+  ylab("Count") + xlab("Has Device Protection")
+table(telco$DeviceProtection == "Yes" & telco$Churn == "Yes") / sum(telco$DeviceProtection == "Yes")
+table(telco$DeviceProtection == "No" & telco$Churn == "Yes") / sum(telco$DeviceProtection == "No")
+table(telco$DeviceProtection == "No internet service" & telco$Churn == "Yes") / sum(telco$DeviceProtection == "No internet service")
+
+# Negative effect
+ggplot(data = telco, aes(x = TechSupport, fill = Churn)) + geom_bar() +
+  ggtitle("Tech Support Service") + scale_fill_brewer(palette = "Dark2") +
+  ylab("Count") + xlab("Tech Support")
+table(telco$TechSupport == "Yes" & telco$Churn == "Yes") / sum(telco$TechSupport == "Yes")
+table(telco$TechSupport == "No internet service" & telco$Churn == "Yes") / sum(telco$TechSupport == "No internet service")
+
+# Slight positive effect
+ggplot(data = telco, aes(x = StreamingTV, fill = Churn)) + geom_bar() +
+  ggtitle("StreamingTV") + scale_fill_brewer(palette = "Dark2") +
+  ylab("Count") + xlab("StreamingTV")
+table(telco$StreamingTV == "Yes" & telco$Churn == "Yes") / sum(telco$StreamingTV == "Yes")
+table(telco$StreamingTV == "No" & telco$Churn == "Yes") / sum(telco$StreamingTV == "No")
+
+
+ggplot(data = telco, aes(x = StreamingMovies, fill = Churn)) + geom_bar() +
+  ggtitle("Streams Movies") + scale_fill_brewer(palette = "Dark2") +
+  ylab("Count") + xlab("Streams Movies")
+table(telco$StreamingMovies == "Yes" & telco$Churn == "Yes") / sum(telco$StreamingMovies == "Yes")
+table(telco$StreamingMovies == "No" & telco$Churn == "Yes") / sum(telco$StreamingMovies == "No")
+
+# Positive effect
+ggplot(data = telco, aes(x = Contract, fill = Churn)) + geom_bar() +
+  ggtitle("Under Contract") + scale_fill_brewer(palette = "Dark2") +
+  ylab("Count") + xlab("Contract Type")
+# Contract Type & Tenure
+ggplot(data = telco, aes(x = Contract, y = tenure, fill = Contract)) + geom_boxplot() +
+  ggtitle("Contract Type") + scale_fill_brewer(palette = "Dark2") +
+  ylab("Tenure") + xlab("Contract Type")
+
+# Negative effect
+ggplot(data = telco, aes(x = PaperlessBilling, fill = Churn)) + geom_bar() +
+  ggtitle("Paperless Billing") + scale_fill_brewer(palette = "Dark2") +
+  ylab("Count") + xlab("Has Paperless Billing")
+table(telco$PaperlessBilling == "Yes" & telco$Churn == "Yes") / sum(telco$PaperlessBilling == "Yes")
+table(telco$PaperlessBilling == "No" & telco$Churn == "Yes") / sum(telco$PaperlessBilling == "No")
+
+# Electronic check is negative
+ggplot(data = telco, aes(x = PaymentMethod, fill = Churn)) + geom_bar() +
+  ggtitle("Method of Payment") + scale_fill_brewer(palette = "Dark2") +
+  ylab("Count") + xlab("Payment Method")
+table(telco$PaymentMethod == "Bank transfer (automatic)" & telco$Churn == "Yes") / sum(telco$PaymentMethod == "Bank transfer (automatic)")
+table(telco$PaymentMethod == "Credit card (automatic)" & telco$Churn == "Yes") / sum(telco$PaymentMethod == "Credit card (automatic)")
+table(telco$PaymentMethod == "Electronic check" & telco$Churn == "Yes") / sum(telco$PaymentMethod == "Electronic check")
+table(telco$PaymentMethod == "Mailed check" & telco$Churn == "Yes") / sum(telco$PaymentMethod == "Mailed check")
+
+# BOX PLOTS / HISTOGRAMS - Continuous
+min(Telco$MonthlyCharges)
+max(Telco$MonthlyCharges)
+
+ggplot(data = telco, aes(y = TotalCharges, x = Churn, fill = Churn)) + geom_boxplot() +
+  ggtitle("Total Charges") + scale_fill_brewer(palette = "Dark2") +
+  ylab("Total Charges") + xlab("Churn")
+```
+
+# 4.  Data Preprocessing
+
+### The dataset is partitioned on an 80 percent train and 20 percent test split. The variables associated with the services of online products, support,
+and streaming are respectively aggregated based on the high correlation they exhibited in the classification tables. The gender and phone service columns are removed
+because their proportion of churn instances offer no meaningful insight by which the analysis will learn from. The percentage of churn across their respective classes
+is nearly identical.
+
+### The SMOTE algorithm is incorporated to increase the number of churn instances so that they represent 50 percent of the data. This analysis trained all models with
+and without SMOTE and the technique improved specificity by an average of 20 percent with a minimal loss in accuracy. One hot transformations are used on the categorical
+predictors since there is no ordinal association between them. The continuous variables are standardized instead of normalized in order to maintain robust degrees of
+separation relative to the presence of outliers. A small proportion of missing values exist only within the total charges variable. They are imputed using the Bayesian
+Linear Regression method because of its ability to retain approximate variance on continuous variables, while respecting the variable relationships.
+
+```{r, include = FALSE}
+Telco <- read.csv("Telco.csv", row.names = 1)
+str(Telco)
+colnames(Telco)
+
+# Factor
+Telco[,c("MultipleLines", "InternetService", "Contract", "PaymentMethod")] <-
+  lapply(Telco[,c("MultipleLines", "InternetService", "Contract", "PaymentMethod")], factor)
+# Drop unnecessary
+Telco <- Telco[, !(colnames(Telco) %in% c("gender", "PhoneService"))]
+
+# Combine Streaming variables
+Telco$StreamingMovies <- as.integer(mapvalues(Telco$StreamingMovies,
+                                              c("No", "No internet service", "Yes"), c(1, 0, 2)))
+Telco$StreamingTV <- as.integer(mapvalues(Telco$StreamingTV,
+                                              c("No", "No internet service", "Yes"), c(1, 0, 2)))
+Telco$Streaming <- (Telco$StreamingMovies + Telco$StreamingTV) / 2
+Telco <- Telco[, !(colnames(Telco) %in% c("StreamingTV", "StreamingMovies"))]
+
+# Combine Online variables
+Telco$OnlineSecurity <- as.integer(mapvalues(Telco$OnlineSecurity,
+                                              c("No", "No internet service", "Yes"), c(1, 0, 2)))
+Telco$OnlineBackup <- as.integer(mapvalues(Telco$OnlineBackup,
+                                          c("No", "No internet service", "Yes"), c(1, 0, 2)))
+Telco$Online <- (Telco$OnlineSecurity + Telco$OnlineBackup) / 2
+Telco <- Telco[, !(colnames(Telco) %in% c("OnlineSecurity", "OnlineBackup"))]
+
+# Combine Support and Protection variables
+Telco$DeviceProtection <- as.integer(mapvalues(Telco$DeviceProtection,
+                                             c("No", "No internet service", "Yes"), c(1, 0, 2)))
+Telco$TechSupport <- as.integer(mapvalues(Telco$TechSupport,
+                                           c("No", "No internet service", "Yes"), c(1, 0, 2)))
+Telco$TechPro <- (Telco$TechSupport + Telco$DeviceProtection) / 2
+Telco <- Telco[, !(colnames(Telco) %in% c("TechSupport", "DeviceProtection"))]
+
+# Map values
+Telco$Dependents <- as.integer(mapvalues(Telco$Dependents, c("No", "Yes"), c(0, 1)))
+
+Telco$PaperlessBilling <- as.integer(mapvalues(Telco$PaperlessBilling, c("No", "Yes"), c(0, 1)))
+
+Telco$Partner <- as.integer(mapvalues(Telco$Partner, c("No", "Yes"), c(0, 1)))
+```
+
+```{r, echo = FALSE, warning = FALSE}
+# One Hot factors
+Telco1 <- one_hot(as.data.table(Telco))
+Telco1$Churn <- as.factor(Telco1$Churn)
+colnames(Telco1) <- c("Senior", "Partner", "Dependents", "Tenure", "Sngl_line", "No_phone",
+                      "Mult_line", "Int_dsl", "Int_fiber", "Int_none", "Cont_month", "Cont_1yr",
+                      "Cont_2yr", "Paperless", "Pay_bank", "Pay_cc", "Pay_echeck", "Pay_mail",
+                      "MoCharges", "TotCharges", "Churn", "Streaming", "Online", "TechPro")
+str(Telco1)
+```
+
+```{r, include = FALSE, warning= FALSE, message = FALSE}
+# PARTITION
+index <- createDataPartition(Telco1$Churn, p=0.8, list = FALSE)
+training <- Telco1[index,]
+testing <- Telco1[-index,]
+
+# NA IMPUTATION
+train_mice <- mice(data.frame(training), method = "norm")
+train_complete <- complete(train_mice)
+test_mice <- mice(data.frame(testing), method = "norm")
+test_complete <- complete(test_mice)
+
+# SMOTE
+smote_train <- SMOTE(Churn ~ ., train_complete, perc.over = 400, perc.under = 125)
+
+# SCALE
+scale <- build_scales(smote_train, verbose = T)
+train <- data.frame(fastScale(data.frame(smote_train[, c(1:20,22:24)]), scales = scale), smote_train$Churn) %>% dplyr::rename(Churn = smote_train.Churn)
+test <- data.frame(fastScale(data.frame(test_complete[, c(1:20,22:24)]), scales = scale), test_complete$Churn) %>% dplyr::rename(Churn = test_complete.Churn)
+```
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+# HEATMAP
+scale_heat <- build_scales(train_complete, verbose = T)
+train_heat <- data.frame(fastScale(data.frame(train_complete[, c(1:20,22:24)]), scales = scale),
+                    train_complete$Churn) %>% dplyr::rename(Churn = train_complete.Churn)
+t <- na.omit(train_heat)
+t$Churn <- as.numeric(t$Churn)
+r2 <- round(cor(t), 2)
+rm2 <- melt(r2)
+ggplot(rm2, aes(x = Var1, y = Var2, fill = value)) +
+  geom_tile() + geom_text(aes(x = Var1, y = Var2, label = value)) + ggtitle("FinalCorrelation Matrix") +
+  theme(plot.title = element_text(hjust = 0.5), axis.text.x =
+          element_text(size = 9, angle = 90, hjust = 1)) + labs(x = "", y = "")
+```
+
+```{r, eval = FALSE, include = FALSE}
+# Exhaustive search - use na.omit set
+features <- regsubsets(Churn ~ ., data = t, nbest = 1, nvmax = dim(t)[2],
+                       method = "exhaustive")
+best <- summary(features)
+plot(features, scale = "adjr2")
+```
+
+# 5.  Binary Classification Analysis
+
+## Logistic Regression:
+### A binary logistic model produces approximately 73.6 percent accuracy while accurately classifying 76.9 percent of the instances of churn. The results of this model are
+presented below, and the sensitivity and specificity ratio reveals that it classifies instances of churn more accurately than retention.
+
+```{r, echo = FALSE, warning = FALSE}
+evals <- data.table(Model = character(), Accuracy = numeric(), Specificity = numeric(),
+                    Recall = numeric(), Precision = numeric(), F1 = numeric())
+logit <- glm(train$Churn ~ ., data = train, family = "binomial")
+PseudoR2(logit, which = "McFadden")
+logit_prob <- predict(logit, newdata = test, type = "response")
+logit_pred <- as.numeric(logit_prob >= 0.5)
+confusionMatrix(table(logit_prob >= 0.5, test$Churn == "Yes"))
+
+e11 <- Accuracy(factor(logit_pred, labels = c("No", "Yes")), test$Churn)
+e12 <- specificity(factor(logit_pred, labels = c("No", "Yes")), test$Churn)
+e13 <- recall(factor(logit_pred, labels = c("No", "Yes")), test$Churn)
+e14 <- precision(factor(logit_pred, labels = c("No", "Yes")), test$Churn)
+e15 <- F1_Score(factor(logit_pred, labels = c("No", "Yes")), test$Churn)
+row_logit <- list("Logistic", e11, e12, e13, e14, e15)
+evals <- rbindlist(list(evals, row_logit))
+```
+
+## Decision Tree Classifier:
+### A decision tree is constructed with a depth of 5 splits.  This pruned tree produced the best classification rather than a deep tree, and accurately classified 73.2
+percent of instances of churn, while maintaining sensitivity at 75.6 percent. This is a slight degredation towards classifying instances of churn as compared to the logistic
+model.
+
+```{r, echo = FALSE}
+tree <- rpart(Churn ~ ., data = train, method = "class", cp = .005, maxdepth = 5, minsplit = 20)
+printcp(tree)
+prp(tree, main = "Pruned Decision Tree Plot", type = 1, extra = 1, under = FALSE,
+    split.font = 1, varlen = -10, box.palette= c("cornflowerblue", "darkolivegreen3"))
+tree_pred <- predict(tree, test, type = "class")
+confusionMatrix(tree_pred, test$Churn)
+
+e21 <- Accuracy(factor(tree_pred, labels = c("No", "Yes")), test$Churn)
+e22 <- specificity(factor(tree_pred, labels = c("No", "Yes")), test$Churn)
+e23 <- recall(factor(tree_pred, labels = c("No", "Yes")), test$Churn)
+e24 <- precision(factor(tree_pred, labels = c("No", "Yes")), test$Churn)
+e25 <- F1_Score(factor(tree_pred, labels = c("No", "Yes")), test$Churn)
+row_tree <- list("Decision Tree", e21, e22, e23, e24, e25)
+evals <- rbindlist(list(evals, row_tree))
+```
+
+## Random Forest Classifier:
+### A random forest is constructed for its ability to describe feature importance.  The chart reveals what can be inferred from the previous plots presented.  Monthly
+charges, having fiber optics, paying by electronic check, and subscribing to a monthly contract greatly influence the level of churn.  Having a two year contract and paying
+by credit card or mailed check reduces the probability of churn. Most of the important features are positively associated with the negative class of churn.  Therefore, for
+business improvement, it's important to focus on removing these factors from client acquisition moreso than on acquiring factors that relate to retention.
+
+```{r, echo = FALSE}
+train_omit <- na.omit(train)
+rf <- randomForest(Churn ~ ., data = train_omit, 
+                   ntree = 500, mtry = 4, nodesize = 10, importance = TRUE, sampsize = 500) 
+varImpPlot(rf, type = 1, main = "Feature Importance", cex = 0.9)
+rf_pred <- predict(rf, test)
+confusionMatrix(rf_pred, test$Churn)
+
+e41 <- Accuracy(factor(rf_pred, labels = c("No", "Yes")), test$Churn)
+e42 <- specificity(factor(rf_pred, labels = c("No", "Yes")), test$Churn)
+e43 <- recall(factor(rf_pred, labels = c("No", "Yes")), test$Churn)
+e44 <- precision(factor(rf_pred, labels = c("No", "Yes")), test$Churn)
+e45 <- F1_Score(factor(rf_pred, labels = c("No", "Yes")), test$Churn)
+row_forest <- list("Random Forest", e41, e42, e43, e44, e45)
+evals <- rbindlist(list(evals, row_forest))
+```
+
+## XGBoost Classifier:
+### A gradient boosting model is constructed for its ability to improve performance without overfitting. While recall remained high, specificity was worse than the other
+models. Accurately predicting the churn class is given greater weight in this analysis. Therefore, this model is seen as failing to improve our objective.
+
+```{r include = FALSE, warning = FALSE}
+train_data <- train[, !(colnames(train) %in% c("Churn"))]
+train_data <- as.matrix(train_data)
+test_data <- test[, !(colnames(test) %in% c("Churn"))]
+test_data <- as.matrix(test_data)
+train_label <- as.numeric(train$Churn) - 1
+test_label <- as.numeric(test$Churn) - 1
+
+xgbtrain <- xgb.DMatrix(data = train_data, label = train_label)
+xb <- xgboost(xgbtrain, max_depth = 3, eta = 0.3, nrounds = 2500, objective = "binary:logistic")
+xgb_prob <- predict(xb, test_data)
+xgb_pred <- as.numeric(xgb_prob >= 0.5)
+```
+
+```{r warning=FALSE, echo = FALSE}
+confusionMatrix(factor(xgb_pred, labels = c("No", "Yes")), test$Churn)
+
+e51 <- Accuracy(factor(xgb_pred, labels = c("No", "Yes")), test$Churn)
+e52 <- specificity(factor(xgb_pred, labels = c("No", "Yes")), test$Churn)
+e53 <- recall(factor(xgb_pred, labels = c("No", "Yes")), test$Churn)
+e54 <- precision(factor(xgb_pred, labels = c("No", "Yes")), test$Churn)
+e55 <- F1_Score(factor(xgb_pred, labels = c("No", "Yes")), test$Churn)
+row_xgboost <- list("XGBoost", e51, e52, e53, e54, e55)
+evals <- rbindlist(list(evals, row_xgboost))
+```
+
+## Neural Network:
+###  A neural network is constructed with 8 hidden layers and over 1.2 million parameters. The leaky relu activation function is utilized for its predictive power.  The
+he uniform initializer is selected for its robust relationship with the leaky rule function, and l2 regularization is incorporated on all layers.  Layers that incorporate
+batch normalization precede the dropout layers to improve stability, and no bias is used with batch normalization for practical reasons. The network produced high precision
+and a relatively low specificity. This fails to fall in line with our initiative of accurately prediction churn instances.
+
+```{r warning=FALSE, echo = FALSE}
+network <- keras_model_sequential()
+
+network %>%
+  layer_dense(units = 128, input_shape = 23, kernel_initializer = initializer_he_uniform(),
+              use_bias = FALSE, kernel_regularizer = regularizer_l2(0.01)) %>%
+  layer_activation_leaky_relu(0.01) %>%
+  layer_batch_normalization(momentum = 0.99, epsilon = 1e-08) %>%
+  layer_dense(units = 128, kernel_initializer = initializer_he_uniform(), use_bias = FALSE,
+              kernel_regularizer = regularizer_l2(0.01)) %>%
+  layer_activation_leaky_relu(0.01) %>%
+  layer_batch_normalization(momentum = 0.99, epsilon = 1e-08) %>%
+  layer_dense(units = 256, kernel_initializer = initializer_he_uniform(), use_bias = FALSE,
+              kernel_regularizer = regularizer_l2(0.01)) %>%
+  layer_activation_leaky_relu(0.01) %>%
+  layer_batch_normalization(momentum = 0.99, epsilon = 1e-08) %>%
+  layer_dense(units = 256, kernel_initializer = initializer_he_uniform(), use_bias = FALSE,
+              kernel_regularizer = regularizer_l2(0.01)) %>%
+  layer_activation_leaky_relu(0.01) %>%
+  layer_batch_normalization(momentum = 0.95, epsilon = 1e-08) %>%
+  layer_dense(units = 256, kernel_initializer = initializer_he_uniform(), use_bias = FALSE,
+              kernel_regularizer = regularizer_l2(0.01)) %>%
+  layer_activation_leaky_relu(0.01) %>%
+  layer_batch_normalization(momentum = 0.95, epsilon = 1e-08) %>%
+  layer_dense(units = 256, kernel_initializer = initializer_he_uniform(), use_bias = FALSE,
+              kernel_regularizer = regularizer_l2(0.01)) %>%
+  layer_activation_leaky_relu(0.01) %>%
+  layer_batch_normalization(momentum = 0.95, epsilon = 1e-08) %>%
+  layer_dense(units = 256, kernel_initializer = initializer_he_uniform(), use_bias = FALSE,
+              kernel_regularizer = regularizer_l2(0.01)) %>%
+  layer_activation_leaky_relu(0.01) %>%
+  layer_batch_normalization(momentum = 0.95, epsilon = 1e-08) %>%
+  layer_dense(units = 128, kernel_initializer = initializer_he_uniform(), use_bias = FALSE,
+              kernel_regularizer = regularizer_l2(0.01)) %>%
+  layer_activation_leaky_relu(0.01) %>%
+  layer_dropout(0.2) %>%
+  layer_dense(units = 128, kernel_initializer = initializer_he_uniform(), use_bias = FALSE,
+              kernel_regularizer = regularizer_l2(0.01)) %>%
+  layer_activation_leaky_relu(0.01) %>%
+  layer_dropout(0.2) %>%
+  layer_dense(units = 1, activation = 'sigmoid', kernel_initializer = initializer_glorot_uniform(),
+              use_bias = FALSE, kernel_regularizer = regularizer_l2(0.01))
+
+network %>% compile(optimizer = optimizer_adam(lr = 1e-6, beta_1=0.9, beta_2=0.999, epsilon=1e-08),
+  loss = 'binary_crossentropy', metrics = c('accuracy') )
+
+# Train/Test data and label from XGBoost
+network %>% fit(train_data, train_label, epochs = 100, batch_size = 64, validation_split = 0.1, verbose = 2)
+
+network_pred <- network %>% predict_classes(test_data)
+confusionMatrix(factor(network_pred, labels = c("No", "Yes")), test$Churn)
+```
+
+## Network Parameters
+
+```{r, warning = FALSE, echo = FALSE}
+summary(network)
+e61 <- Accuracy(factor(network_pred, labels = c("No", "Yes")), test$Churn)
+e62 <- specificity(factor(network_pred, labels = c("No", "Yes")), test$Churn)
+e63 <- recall(factor(network_pred, labels = c("No", "Yes")), test$Churn)
+e64 <- precision(factor(network_pred, labels = c("No", "Yes")), test$Churn)
+e65 <- F1_Score(factor(network_pred, labels = c("No", "Yes")), test$Churn)
+row_network <- list("Neural Network", e61, e62, e63, e64, e65)
+evals <- rbindlist(list(evals, row_network))
+```
+
+# 6.  Performance Evaluation
+### A final evaluation table is constructed of all of the models providing relevant evaluation metrics. The best overall performance came from the logistic regression model,
+where precision and specificity were balanced.  This means that the model does best at separating the two classes at the cost of a minor reduction in total accuracy. The
+ensemble and neural network models need to be adjusted in order to improve the decision boundary for the churn class.
+
+```{r, echo = FALSE}
+evals[,2:6] <- round(evals[,2:6], 3)
+evals %>%
+  kbl(caption = "Final Evaluation Table") %>%
+  kable_classic(full_width = F, html_font = "Cambria") %>%
+  kable_styling(latex_options = "HOLD_position")
+```
+
+# 7. Business Discernment
+
+### The current analysis offers substantial insight into the key features that play a role in customer retention. The company can now set up marketing campaigns that
+focus on acquiring customers with families because they remain loyal, and that do not focus on acquiring seniors because of their tendency to churn.  Also, setting up
+payment systems that encourage credit card or mailed check payments will offer customer convenience and move them into the class that churns less frequently.  Another
+important issue is that customers with high monthly charges churn more frequently, and some services are associated with high charges. There is a strong positive association
+for customers with fiber optic internet and high monthly charges.  Therefore, determining different pricing strategies that gradually bring customers into the service may
+improve long term retention. Another option would be to train service agents to offer a different internet package when customers call to cancel their fiber optic service.
+Finally, because high monthly charges results in elevated churn, marketers can package different priced services together at a reduced price.
+
+# 8.  Conclusion
+
+### By analyzing the telecommunications company dataset produced by IBM, we distinguished key features that lead to customer churn and those that lead to longer tenure.
+We applied advanced neural network and gradient boosting models, but ultimately selected the logistic regression model for its improvement in specificity. These insights
+may be utilized by company leaders to improve existing products and determine new pricing strategies for customer retention.
+
+\newpage
+
+## Sources:
+
+Newspaper Article \
+“How Costly Is Customer Churn in the Telecom Industry?” The European Business Review, August 18, 2020, https://www.europeanbusinessreview.com/how-costly-is-customer-churn-
+in-the-telecom-industry/
+
+
+Newspaper Article \
+Curi, Mariana. “Customer Churn in Telecom Segment,” Towards Data Science, July 21, https://towardsdatascience.com/customer-churn-in-telecom-segment-5e49356f39e5
+
+
+Online Article \
+Hughes, Arthur M. "Churn reduction in the telecom industry," The Database Marketing Institute, 2008, http://www.dbmarketing.com/telecom/churnreduction.html#:~:text=
+Annual%20churn%20rates%20for%20telecommunications,the%20way%20they%20are%20treated
+
+
+Online Article \
+De, Anindito. "Revenue Enhancement and Churn Prevention for Telecom Service Providers," Wipro Limited, https://www.wipro.com/en-US/communications-/revenue-enhancement-and-
+churn-prevention-for-telecom-service-pro/
+
